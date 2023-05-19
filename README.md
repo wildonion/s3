@@ -8,3 +8,8 @@ a very simple sharded shared sate design pattern using standard `HashMap` as the
 
 ```cargo run --bin s3```
 
+# 🛠️ Tools 
+
+* tokio select 
+* tokio spawn 
+* tokio mutex 
