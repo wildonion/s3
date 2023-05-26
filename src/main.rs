@@ -4,29 +4,61 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use once_cell::sync::Lazy;
+use rand::{Rng, SeedableRng, RngCore};
+use rand_chacha::{rand_core, ChaCha12Rng};
 
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>>{
     
     /*
+
+    
         shared state sharding to decrease the time lock, we can use a shard from 
         the pool to update the mutex by locking on it inside a thread (either blocking 
         using std::sync::Mutex or none blocking using tokio::sync::Mutex) and if other 
-        thread wants to use it it can use other shard instead of waiting for the locked 
+        thread wants to use it, it can use other shard instead of waiting for the locked 
         shard to gets freed, we can use try_lock() method to check that the shard is 
         currently being locked or not also we have to update the whole shards inside 
         the pool at the end of each mutex free process which is something that will
-        be taken care of by semaphores.
+        be taken care of by semaphores, also we've used tokio mutex to lock on the 
+        mutex asyncly instead of using std mutex which is a blocking manner.
+        
+        
+        struct Data{id: String}
+        let (sender, mut receiver) = tokio::sync::mpsc::channel::<Arc<tokio::sync::Mutex<Data>>>(1024);
+        let data_ = Arc::new(tokio::sync::Mutex::new(Data{id: "0".to_string()}));
+        tokio::spawn(async move{
+            sender.send(data_).await;
+        });
+        tokio::select!{
+            data = receiver.recv() => {
+                if let Some(d) = data{
+                    // we got data
+                    // ...
+                }
+            }
+        }
+    
+    
     */
+
+
+
+    pub const LAZY_STATIC_SHARED_DATA: Lazy<Db> = Lazy::new(||{
+        HashMap::new()
+    });
     
     type Db = HashMap<i32, String>;
     let shards = 10;
-    
+
+    let rand_generator = Arc::new(tokio::sync::Mutex::new(ChaCha12Rng::from_entropy()));
+
     let (mutex_data_sender, mut mutex_data_receiver) = tokio::sync::mpsc::channel::<Db>(shards as usize);
     let (map_shards_sender, mut map_shards_receiver) = tokio::sync::broadcast::channel::<Vec<Arc<tokio::sync::Mutex<Db>>>>(shards as usize);
     
-    let send_sync_map = Arc::new(tokio::sync::Mutex::new(HashMap::new())); //// no need to put in Mutex since we don't want to mutate it
+    let send_sync_map = Arc::new(tokio::sync::Mutex::new(LAZY_STATIC_SHARED_DATA.clone())); //// no need to put in Mutex since we don't want to mutate it
     let mutex_data_sender = mutex_data_sender.clone();
     
     /*
@@ -71,13 +103,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
     
     */
     tokio::spawn(async move{
+        let generator = rand_generator.clone(); 
         for idx in 0..map_shards.clone().len(){
             match map_shards[idx].clone().try_lock(){
                 Ok(mut gaurd) => {
-                    
+
+                    // generate random number
+                    let mut rng = generator.lock().await;
+                    let random = rng.to_owned().gen::<i32>();
+
                     // udpate the gaurd 
                     let value = format!("value is {}", idx);
-                    gaurd.insert(idx as i32, value);
+                    gaurd.insert((idx as i32) * random, value);
 
                     // send the mutex to downside of the channel
                     mutex_data_sender.send(gaurd.to_owned()).await.unwrap();
